@@ -142,30 +142,100 @@ def interactive_threshold_selector(image):
 
     return done['mask']
 
+def get_fluke_mask_with_sam(image_bgr, checkpoint_path="/Users/georgesato/PhD/Chapter1/Fluke_Measurements/Processing code/Python/Bose and Lien 1989/segment-anything/sam_vit_b_01ec64.pth"):
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    sam = sam_model_registry["vit_b"](checkpoint=checkpoint_path)
+    sam.eval()
+    predictor = SamPredictor(sam)
+    predictor.set_image(image_rgb)
+
+    # Display image and ask user for click
+    fig, ax = plt.subplots()
+    ax.imshow(image_rgb)
+    ax.set_title("Click a point on the fluke")
+    clicked = plt.ginput(1, timeout=0)
+    plt.close()
+
+    if not clicked:
+        print("❌ No point selected. Aborting SAM prediction.")
+        return None
+
+    input_point = np.array([clicked[0]])
+    input_label = np.array([1])
+
+    masks, scores, logits = predictor.predict(
+        point_coords=input_point,
+        point_labels=input_label,
+        multimask_output=False
+    )
+
+    # Show mask preview with button
+    fig, ax = plt.subplots()
+    plt.subplots_adjust(bottom=0.2)
+    ax.imshow(masks[0], cmap='gray')
+    ax.set_title("SAM Mask Preview")
+    ax.axis("off")
+
+    # Add Continue button
+    ax_button = plt.axes([0.4, 0.05, 0.2, 0.075])
+    btn = Button(ax_button, 'Continue')
+    clicked_flag = {'flag': False}
+
+    def on_click(event):
+        clicked_flag['flag'] = True
+        plt.close()
+
+    btn.on_clicked(on_click)
+    plt.show()
+
+    return masks[0].astype(np.uint8) * 255
+
 
 def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m=0.005):
-    # --- 1. Resize for display ---
     h_img, w_img = img.shape[:2]
     scale_factor = min(1000 / w_img, 1.0)
     display_img = cv2.resize(img, (int(w_img * scale_factor), int(h_img * scale_factor)))
     display_rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
 
-    # --- 2. Ask for base and tip click ---
-    plt.figure(figsize=(10, 8))
-    plt.imshow(display_rgb)
-    plt.axhline(display_rgb.shape[0] / 2, color='white', linestyle='--', linewidth=0.7)
-    plt.axvline(display_rgb.shape[1] / 2, color='white', linestyle='--', linewidth=0.7)
-    plt.title("Click fluke base then tip (to define span)")
+    # --- 1. Get fluke mask using SAM ---
+    refined_mask = get_fluke_mask_with_sam(img)
+    if refined_mask is None:
+        return pd.DataFrame()
+
+    # Resize mask to match display
+    refined_mask_display = cv2.resize(refined_mask, (display_rgb.shape[1], display_rgb.shape[0]))
+    overlay_mask = np.zeros_like(display_rgb)
+    overlay_mask[:, :, 1] = refined_mask_display  # green mask
+    blended = cv2.addWeighted(display_rgb, 0.7, overlay_mask, 0.3, 0)
+
+    # --- 2. Ask for base and tip click on overlay ---
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.imshow(blended)
+    ax.axhline(display_rgb.shape[0] / 2, color='white', linestyle='--', linewidth=0.7)
+    ax.axvline(display_rgb.shape[1] / 2, color='white', linestyle='--', linewidth=0.7)
+    ax.set_title("Click fluke base then tip (to define span)")
     clicked_pts = plt.ginput(2, timeout=0)
+
+    if len(clicked_pts) < 2:
+        print("❌ Not enough points selected. Aborting sectioning.")
+        plt.close()
+        return pd.DataFrame()
+
+    for (cx, cy) in clicked_pts:
+        ax.plot(cx, cy, 'rx')
+    plt.draw()
+    plt.pause(1)
     plt.close()
 
-    # Upscale to original image size
     (x1, y1), (x2, y2) = [(x / scale_factor, y / scale_factor) for (x, y) in clicked_pts]
 
-    # --- 3. Interactive threshold selection ---
-    refined_mask = interactive_threshold_selector(img)
+    # --- Symmetry axis detection (rough) ---
+    moments = cv2.moments(refined_mask)
+    if moments['m00'] != 0:
+        cx = int(moments['m10'] / moments['m00'])
+        cv2.line(img, (cx, 0), (cx, h_img), (255, 255, 0), 2)  # Draw symmetry axis
 
-    # --- 4. Generate 11 sections between x1 and x2 ---
+    # --- 3. Generate 11 sections ---
     x_edges = np.linspace(x1, x2, 12)
     chord_lengths = []
     span_positions = []
@@ -192,16 +262,16 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
             cv2.putText(overlay, f"{i+1}", (mid_x + 5, y_max),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
-    # --- 5. Draw fluke outline ---
+    # --- 4. Draw fluke outline ---
     contours, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(overlay, contours, -1, (0, 255, 0), 1)
 
-    # --- 6. Skip if no valid sections ---
+    # --- 5. Skip if no valid sections ---
     if len(chord_lengths) == 0:
         print("⚠️ No valid fluke pixels found in any section. Skipping overlay and CSV save.")
         return pd.DataFrame()
 
-    # --- 7. Pitching axis estimation ---
+    # --- 6. Pitching axis estimation ---
     chord_ref = [0.87, 0.80, 0.72, 0.64, 0.57, 0.49, 0.42, 0.35, 0.27, 0.20, 0.00]
     pitch_ref = [0.435, 0.365, 0.300, 0.245, 0.190, 0.130, 0.065, 0.000, -0.080, -0.175, 0.000]
 
@@ -212,14 +282,14 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
     b_linear = interp_func(chord_lengths)
     b_poly = poly_fit(chord_lengths)
 
-    # --- 8. Compute area and AR ---
+    # --- 7. Compute area and AR ---
     strip_width = (abs(x2 - x1) / 11) * pixel_to_m
     area = np.sum([c * strip_width for c in chord_lengths])
     semi_span = 11 * strip_width
     AR = (4 * semi_span**2) / (2 * area) if area > 0 else np.nan
     mean_chord = np.mean(chord_lengths)
 
-    # --- 9. Save CSV ---
+    # --- 8. Save CSV ---
     df = pd.DataFrame({
         "station": list(range(1, 12)),
         "span_m": span_positions,
@@ -238,7 +308,7 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
     df = pd.concat([df, summary_row], ignore_index=True)
     df.to_csv(output_csv_path, index=False)
 
-    # --- 10. Save image overlay ---
+    # --- 9. Save image overlay ---
     cv2.imwrite(output_img_path, overlay)
     print(f"✅ Saved: {output_csv_path}\n🖼️ Overlay saved: {output_img_path}")
 
@@ -246,7 +316,7 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
 
 # --- MAIN WRAPPER ---
 def run_fluke_extraction_for_uav21_196e(base_dir):
-    deployment = "UAV21_196e"
+    deployment = "UAV22_201d"
     dep_path = os.path.join(base_dir, deployment)
     best_image_path = get_best_image_path(dep_path)
     print(f"📸 Best image selected: {best_image_path}")
