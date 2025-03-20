@@ -354,6 +354,45 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
     pitch_axis_y = slider_pitch.val
     pitch_axis_m = pitch_axis_y * pixel_to_m
 
+    # --- 3.5: Add horizontal cutoff to mask (removing peduncle above line) ---
+    fig, ax = plt.subplots()
+    fig.suptitle("Step 3.5: Adjust Cutoff Line (Removes Peduncle)", fontsize=14, weight='bold')
+    plt.subplots_adjust(bottom=0.25)
+    ax.imshow(blended)
+    cutoff_line = ax.axhline(display_rgb.shape[0] * 0.2, color='red', linestyle='--')
+
+    ax_slider_cut = plt.axes([0.25, 0.1, 0.5, 0.03])
+    slider_cut = Slider(ax_slider_cut, 'Cutoff Y', 0, display_rgb.shape[0], valinit=display_rgb.shape[0] * 0.2)
+
+    cutoff_confirmed = {'value': False}
+
+    def update_cutoff(val):
+        cutoff_line.set_ydata([val, val])
+        fig.canvas.draw_idle()
+
+    slider_cut.on_changed(update_cutoff)
+
+    ax_button = plt.axes([0.4, 0.02, 0.2, 0.05])
+    btn_cut = Button(ax_button, 'Confirm')
+
+    def confirm_cutoff(event):
+        cutoff_confirmed['value'] = True
+        plt.close()
+
+    btn_cut.on_clicked(confirm_cutoff)
+    plt.show()
+
+    if not cutoff_confirmed['value']:
+        return pd.DataFrame()
+
+    cutoff_y = int(slider_cut.val / scale_factor)
+    refined_mask[:cutoff_y, :] = 0  # Zero out mask above the cutoff
+    # Recalculate the blended image to reflect cutoff mask
+    refined_mask_display = cv2.resize(refined_mask, (display_rgb.shape[1], display_rgb.shape[0]))
+    overlay_mask = np.zeros_like(display_rgb)
+    overlay_mask[:, :, 1] = refined_mask_display
+    blended = cv2.addWeighted(display_rgb, 0.7, overlay_mask, 0.3, 0)
+
     # --- 4: Click fluke tip ---
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.imshow(blended)
