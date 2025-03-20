@@ -359,8 +359,8 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
 
     (x1, y1), (x2, y2) = [(x / scale_factor, y / scale_factor) for (x, y) in clicked_pts]
 
-    # --- 3. Generate 11 sections ---
-    x_edges = np.linspace(x1, x2, 12)
+    # --- 3. Generate 10 sections ---
+    x_edges = np.linspace(x1, x2, 11)  # 10 segments → 11 edges
     chord_lengths = []
     span_positions = []
     leading_edges = []
@@ -369,8 +369,10 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
     pitch_pts = []
 
     overlay = img.copy()
-    for i in range(11):
-        x_start, x_end = int(x_edges[i]), int(x_edges[i+1])
+
+    # Loop to draw 10 lines only (stations 1 to 10)
+    for i in range(10):
+        x_start, x_end = int(x_edges[i]), int(x_edges[i + 1])
         section = refined_mask[:, x_start:x_end]
         y_coords = np.where(section > 0)[0]
 
@@ -380,6 +382,7 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
             chord = (y_max - y_min) * pixel_to_m
             mid_x = int(0.5 * (x_start + x_end))
 
+            # Store values
             leading_edges.append(y_min * pixel_to_m)
             trailing_edges.append(y_max * pixel_to_m)
             chord_lengths.append(chord)
@@ -387,57 +390,69 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
             span_pos = (mid_x - x_edges[0]) * pixel_to_m
             span_positions.append(span_pos)
 
+            # Draw section line and station number
             cv2.line(overlay, (mid_x, y_min), (mid_x, y_max), (0, 0, 255), 2)
-            cv2.putText(overlay, f"{i+1}", (mid_x + 5, y_max),
+            cv2.putText(overlay, f"{i + 1}", (mid_x + 5, y_max),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+
+    # --- Add station 11 (tip) ---
+    span_positions.append((x_edges[-1] - x_edges[0]) * pixel_to_m)
+    chord_lengths.append(0.0)
+    leading_edges.append(np.nan)
+    trailing_edges.append(np.nan)
+    section_centers.append(int(0.5 * (x_edges[-2] + x_edges[-1])))
 
     # --- 4. Draw outline & symmetry ---
     contours, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(overlay, contours, -1, (0, 255, 0), 1)
     cv2.line(overlay, (symmetry_axis_px, 0), (symmetry_axis_px, h_img), (255, 255, 0), 2)
  
-    # --- 5. Pitching axis estimation ---
-    chord_ref = [0.87, 0.80, 0.72, 0.64, 0.57, 0.49, 0.42, 0.35, 0.27, 0.20, 0.00]
-    pitch_ref = [0.435, 0.365, 0.300, 0.245, 0.190, 0.130, 0.065, 0.000, -0.080, -0.175, 0.000]
-
-    interp_func = interp1d(chord_ref, pitch_ref, kind='linear', bounds_error=False, fill_value="extrapolate")
-    poly_fit = Polynomial.fit(chord_ref, pitch_ref, deg=3).convert()
-
-    chord_arr = np.array(chord_lengths)
-    b_linear = interp_func(chord_arr)
-    b_poly = poly_fit(chord_arr)
-
     # Add final station (tip) with zero chord
     if len(span_positions) > 0:
         span_positions.append((x_edges[-1] - x_edges[0]) * pixel_to_m)
         chord_lengths.append(0.0)
         leading_edges.append(np.nan)
         trailing_edges.append(np.nan)
-        b_linear = np.append(b_linear, [0.0])
-        b_poly = np.append(b_poly, [0.0])
         section_centers.append(int(0.5 * (x_edges[-2] + x_edges[-1])))
 
-    for i in range(len(chord_lengths)):
-        if chord_lengths[i] > 0:
-            cx = section_centers[i]
-            py = int((leading_edges[i] / pixel_to_m) + b_poly[i] * ((trailing_edges[i] - leading_edges[i]) / pixel_to_m))
-            pitch_pts.append((cx, py))
-            cv2.circle(overlay, (cx, py), 3, (255, 0, 255), -1)
+    # --- 5. Ask user to adjust pitching axis height (Y position) ---
+    fig, ax = plt.subplots()
+    plt.subplots_adjust(bottom=0.25)
+    ax.imshow(overlay)
+    pitch_line_y = overlay.shape[0] // 2
+    line = ax.axhline(pitch_line_y, color='magenta', linestyle='--', label='Pitch Axis')
 
-    # --- 6. Save pitching fit plot ---
-    x = np.array(chord_ref)
-    y = np.array(pitch_ref)
-    x_fit = np.linspace(0, 0.9, 200)
-    plt.figure()
-    plt.plot(x, y, 'ko', label='Reference')
-    plt.plot(x_fit, interp_func(x_fit), 'r--', label='Linear interp')
-    plt.plot(x_fit, poly_fit(x_fit), 'b-', label='Polynomial fit')
-    plt.xlabel("Chord length (m)")
-    plt.ylabel("Pitching axis (fraction)")
-    plt.legend()
-    plt.title("Pitching Axis Position Estimation")
-    plt.savefig("/Users/georgesato/PhD/Chapter1/Fluke_Measurements/Processing code/Python/Bose and Lien 1989/pitching_axis_fit.png")
-    plt.close()
+    ax_slider = plt.axes([0.25, 0.1, 0.5, 0.03])
+    slider = Slider(ax_slider, 'Pitch Axis Y', 0, overlay.shape[0], valinit=pitch_line_y)
+
+    confirmed = {'value': False}
+
+    def update_pitch(val):
+        line.set_ydata([val, val])
+        fig.canvas.draw_idle()
+
+    slider.on_changed(update_pitch)
+
+    ax_button = plt.axes([0.4, 0.02, 0.2, 0.05])
+    button = Button(ax_button, 'Confirm')
+
+    def confirm_pitch(event):
+        confirmed['value'] = True
+        plt.close()
+
+    button.on_clicked(confirm_pitch)
+    plt.title("Step 3: Adjust Pitching Axis (Y)")
+    plt.show()
+
+    if not confirmed['value']:
+        return pd.DataFrame()
+
+    pitch_axis_y = slider.val
+    pitch_axis_m = pitch_axis_y * pixel_to_m
+
+    # Draw magenta dots on the chosen pitching axis
+    for cx in section_centers:
+        cv2.circle(overlay, (cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
 
     # --- 7. Compute area and AR ---
     strip_width = (abs(x2 - x1) / 11) * pixel_to_m
@@ -446,19 +461,12 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
     AR = (4 * semi_span**2) / (2 * area) if area > 0 else np.nan
     mean_chord = np.mean(chord_lengths[:-1])  # exclude tip
 
-    lengths = list(map(len, [leading_edges, trailing_edges, chord_lengths, b_linear, b_poly]))
-    if len(set(lengths)) > 1:
-        print("❌ Arrays are mismatched in length:", lengths)
-        return pd.DataFrame()
-
-    # --- 8. Save CSV ---
     df = pd.DataFrame({
         "station": list(range(1, 12)),
         "leading_edge": leading_edges[:11],
         "trailing_edge": trailing_edges[:11],
         "chord_length": chord_lengths[:11],
-        "b_linear": b_linear[:11],
-        "b_poly": b_poly[:11]
+        "pitch_axis_m_px": [pitch_axis_m] * 11  # fixed manual Y-coordinate
     })
 
     df.to_csv(output_csv_path, index=False)
