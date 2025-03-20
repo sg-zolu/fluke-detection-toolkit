@@ -5,8 +5,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from matplotlib.patches import Rectangle
-from numpy.polynomial.polynomial import Polynomial
 from matplotlib.widgets import Slider, Button
+from matplotlib.lines import Line2D
+from numpy.polynomial.polynomial import Polynomial
 from segment_anything import sam_model_registry, SamPredictor
 
 def rotate_with_slider(image):
@@ -87,140 +88,9 @@ def crop_and_rotate_fluke(image_path):
 
     return rotated
 
-# --- Step 3: Manual trace + 11-section processing ---
-def interactive_threshold_selector(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-
-    fig, ax = plt.subplots()
-    plt.subplots_adjust(left=0.25, bottom=0.35)
-    mask_display = ax.imshow(np.zeros_like(gray), cmap='gray')
-    ax.set_title("Adjust threshold to segment fluke")
-    ax.axis("off")
-
-    # Sliders
-    ax_block = plt.axes([0.25, 0.2, 0.65, 0.03])
-    ax_c = plt.axes([0.25, 0.15, 0.65, 0.03])
-    slider_block = Slider(ax_block, 'Block Size', 3, 99, valinit=11, valstep=2)
-    slider_c = Slider(ax_c, 'C (bias)', -20, 20, valinit=2, valstep=1)
-
-    # Done button
-    ax_button = plt.axes([0.45, 0.05, 0.1, 0.04])
-    button = Button(ax_button, 'Done')
-    done = {'flag': False, 'mask': None}
-
-    def update(val):
-        block = int(slider_block.val)
-        C = slider_c.val
-
-        mask = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, block, C)
-
-        # Clean up mask
-        kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-        # Draw contour
-        contour_overlay = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(contour_overlay, contours, -1, (0, 255, 0), 1)
-
-        mask_display.set_data(cv2.cvtColor(contour_overlay, cv2.COLOR_BGR2RGB))
-        fig.canvas.draw_idle()
-        done['mask'] = mask
-
-    def on_done(event):
-        done['flag'] = True
-        plt.close()
-
-    slider_block.on_changed(update)
-    slider_c.on_changed(update)
-    button.on_clicked(on_done)
-    update(None)  # Initial render
-    plt.show()
-
-    return done['mask']
-
-# --- Step 4: 11-section processing ---
-adjusted_axis_x = None
-
-
-def get_fluke_mask_with_sam(image_bgr, checkpoint_path="/Users/georgesato/PhD/Chapter1/Fluke_Measurements/Processing code/Python/Bose and Lien 1989/segment-anything/sam_vit_b_01ec64.pth"):
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    sam = sam_model_registry["vit_b"](checkpoint=checkpoint_path)
-    sam.eval()
-    predictor = SamPredictor(sam)
-    predictor.set_image(image_rgb)
-
-    # Display image and ask user for click
-    fig, ax = plt.subplots()
-    ax.imshow(image_rgb)
-    ax.set_title("Click a point on the fluke")
-    clicked = plt.ginput(1, timeout=0)
-    plt.close()
-
-    if not clicked:
-        print("❌ No point selected. Aborting SAM prediction.")
-        return None
-
-    input_point = np.array([clicked[0]])
-    input_label = np.array([1])
-
-    masks, scores, logits = predictor.predict(
-        point_coords=input_point,
-        point_labels=input_label,
-        multimask_output=False
-    )
-
-    # Show mask preview with Continue
-    fig, ax = plt.subplots()
-    plt.subplots_adjust(bottom=0.2)
-    ax.imshow(masks[0], cmap='gray')
-    ax.set_title("SAM Mask Preview")
-    ax.axis("off")
-
-    ax_button = plt.axes([0.4, 0.05, 0.2, 0.075])
-    btn = Button(ax_button, 'Continue')
-    btn.on_clicked(lambda event: plt.close())
-    plt.show()
-
-    return masks[0].astype(np.uint8) * 255
-
-
-def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m=0.005):
-    global adjusted_axis_x
-
-    h_img, w_img = img.shape[:2]
-    scale_factor = min(1000 / w_img, 1.0)
-    display_img = cv2.resize(img, (int(w_img * scale_factor), int(h_img * scale_factor)))
-    display_rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
-
-    # --- 1. Get fluke mask using SAM ---
-    refined_mask = get_fluke_mask_with_sam(img)
-    if refined_mask is None:
-        return pd.DataFrame()
-
-    # Resize mask to match display
-    refined_mask_display = cv2.resize(refined_mask, (display_rgb.shape[1], display_rgb.shape[0]))
-    overlay_mask = np.zeros_like(display_rgb)
-    overlay_mask[:, :, 1] = refined_mask_display
-    blended = cv2.addWeighted(display_rgb, 0.7, overlay_mask, 0.3, 0)
-
-    import cv2
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from matplotlib.widgets import Slider, Button
-from scipy.interpolate import interp1d
-from numpy.polynomial.polynomial import Polynomial
-from segment_anything import sam_model_registry, SamPredictor
-
 # --- New: adjustable axis (global var for simplicity) ---
 adjusted_axis_x = None
 
-
 def get_fluke_mask_with_sam(image_bgr, checkpoint_path="/Users/georgesato/PhD/Chapter1/Fluke_Measurements/Processing code/Python/Bose and Lien 1989/segment-anything/sam_vit_b_01ec64.pth"):
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     sam = sam_model_registry["vit_b"](checkpoint=checkpoint_path)
@@ -262,6 +132,88 @@ def get_fluke_mask_with_sam(image_bgr, checkpoint_path="/Users/georgesato/PhD/Ch
 
     return masks[0].astype(np.uint8) * 255
 
+def select_fluke_tip(img, refined_mask, pitch_axis_y, adjusted_axis_x, root_chord_x, scale_factor, pixel_to_m):
+    # --- 4: Click fluke tip ---
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.imshow(img)
+    ax.axhline(pitch_axis_y, color='magenta', linestyle='--')
+    ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
+    ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--')
+    ax.set_title("Step 4: Click fluke tip")
+
+    tip_point = plt.ginput(1, timeout=0)
+    plt.close()
+
+    if not tip_point:
+        print("❌ No tip selected. Aborting.")
+        return pd.DataFrame()
+
+    (x_tip, y_tip) = tip_point[0]
+    x_tip /= scale_factor
+    y_tip /= scale_factor
+
+    overlay = img.copy()
+
+    # --- Ensure root_chord_x is to the left of x_tip ---
+    if x_tip < root_chord_x:
+        root_chord_x, x_tip = x_tip, root_chord_x  # Swap to maintain left → right direction
+
+    # --- Generate 10 sections from root to tip ---
+    x_edges = np.linspace(root_chord_x, x_tip, 11)  # 10 segments = 11 edges
+    chord_lengths = []
+    span_positions = []
+    leading_edges = []
+    trailing_edges = []
+    section_centers = []
+
+    for i in range(10):
+        x_start, x_end = int(x_edges[i]), int(x_edges[i + 1])
+        section = refined_mask[:, x_start:x_end]
+        y_coords = np.where(section > 0)[0]
+
+        if len(y_coords) > 0:
+            y_min = int(np.min(y_coords))
+            y_max = int(np.max(y_coords))
+            chord = (y_max - y_min) * pixel_to_m
+            mid_x = int(0.5 * (x_start + x_end))
+
+            leading_edges.append(y_min * pixel_to_m)
+            trailing_edges.append(y_max * pixel_to_m)
+            chord_lengths.append(chord)
+            section_centers.append(mid_x)
+            span_positions.append((mid_x - x_edges[0]) * pixel_to_m)
+
+    # --- Clean up and finalize chord section data ---
+    if len(chord_lengths) < 11:
+        span_positions.append((x_edges[-1] - x_edges[0]) * pixel_to_m)
+        chord_lengths.append(0.0)
+        leading_edges.append(np.nan)
+        trailing_edges.append(np.nan)
+        section_centers.append(int(0.5 * (x_edges[-2] + x_edges[-1])))
+
+    # --- Check lengths before creating DataFrame ---
+    lengths = {
+        "chord_lengths": len(chord_lengths),
+        "leading_edges": len(leading_edges),
+        "trailing_edges": len(trailing_edges),
+        "section_centers": len(section_centers),
+        "pitch_axis_m": 11
+    }
+    print("✅ Section data lengths:", lengths)
+
+    if len(set(lengths.values())) > 1:
+        print("❌ Mismatched lengths detected. Aborting.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame({
+        "station": list(range(1, 12)),
+        "leading_edge": leading_edges,
+        "trailing_edge": trailing_edges,
+        "chord_length": chord_lengths,
+        "pitch_axis_m": [pitch_axis_y] * 11
+    })
+    
+    return df, overlay
 
 def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m=0.005):
     global adjusted_axis_x
@@ -288,7 +240,7 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
     ax.imshow(blended)
     default_axis = display_rgb.shape[1] // 2
     axis_line = ax.axvline(default_axis, color='cyan', linestyle='-', linewidth=1.5)
-    ax.set_title("Step 1: Adjust symmetry axis (then confirm)")
+    ax.set_title("Step 1: Adjust symmetry axis (then confirm)", fontsize=14, weight='bold')
 
     ax_slider = plt.axes([0.25, 0.1, 0.5, 0.03])
     slider = Slider(ax_slider, 'Axis X', 0, display_rgb.shape[1], valinit=default_axis)
@@ -316,61 +268,133 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
     adjusted_axis_x = slider.val
     symmetry_axis_px = int(adjusted_axis_x / scale_factor)
 
-    # --- 3. Ask for base and tip click ---
-    while True:
-        fig, ax = plt.subplots(figsize=(10, 8))
-        ax.imshow(blended)
-        ax.axhline(display_rgb.shape[0] / 2, color='white', linestyle='--', linewidth=0.7)
-        ax.axvline(adjusted_axis_x, color='cyan', linestyle='-', linewidth=1.5)
-        ax.set_title("Step 2: Click fluke base then tip (then confirm or retry)")
+    # --- 2.5: Ask user to adjust root chord position (vertical base line) ---
+    fig, ax = plt.subplots()
+    fig.suptitle("Step 2: Adjust Root Chord (Vertical Base Line)", fontsize=14, weight='bold')
+    plt.subplots_adjust(bottom=0.25)
+    ax.imshow(blended)
+    default_root_x = display_rgb.shape[1] * 0.25
+    root_line = ax.axvline(default_root_x, color='orange', linestyle='--', label='Root Chord')
+    
+    # Add legend
+    legend_elements = [
+        Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
+        Line2D([0], [0], color='orange', linestyle='--', label='Root Chord')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
 
-        clicked_pts = plt.ginput(2, timeout=0)
+    ax_slider_root = plt.axes([0.25, 0.1, 0.5, 0.03])
+    slider_root = Slider(ax_slider_root, 'Root Chord X', 0, display_rgb.shape[1], valinit=default_root_x)
 
-        if len(clicked_pts) < 2:
-            print("❌ Not enough points selected. Aborting sectioning.")
-            plt.close()
-            return pd.DataFrame()
+    root_confirmed = {'value': False}
 
-        for (cx, cy) in clicked_pts:
-            ax.plot(cx, cy, 'rx')
-        fig.canvas.draw()
+    def update_root(val):
+        root_line.set_xdata([val, val])
+        fig.canvas.draw_idle()
 
-        # Confirmation and retry buttons
-        confirm_ax = plt.axes([0.35, 0.02, 0.15, 0.05])
-        retry_ax = plt.axes([0.55, 0.02, 0.15, 0.05])
-        clicked_confirmed = {'value': False}
+    slider_root.on_changed(update_root)
 
-        def confirm_callback(event):
-            clicked_confirmed['value'] = True
-            plt.close()
+    ax_button = plt.axes([0.4, 0.02, 0.2, 0.05])
+    btn_confirm = Button(ax_button, 'Confirm')
 
-        def retry_callback(event):
-            clicked_confirmed['value'] = False
-            plt.close()
+    def confirm_root(event):
+        root_confirmed['value'] = True
+        plt.close()
 
-        confirm_btn = Button(confirm_ax, 'Confirm')
-        retry_btn = Button(retry_ax, 'Retry')
-        confirm_btn.on_clicked(confirm_callback)
-        retry_btn.on_clicked(retry_callback)
-        plt.show()
+    btn_confirm.on_clicked(confirm_root)
+    plt.show()
 
-        if clicked_confirmed['value']:
-            break
+    if not root_confirmed['value']:
+        return pd.DataFrame()
 
-    (x1, y1), (x2, y2) = [(x / scale_factor, y / scale_factor) for (x, y) in clicked_pts]
+    root_chord_x = slider_root.val / scale_factor
 
-    # --- 3. Generate 10 sections ---
-    x_edges = np.linspace(x1, x2, 11)  # 10 segments → 11 edges
+    # --- 3: Adjust pitching axis BEFORE tip click ---
+    fig, ax = plt.subplots()
+    fig.suptitle("Step 3: Adjust Pitching Axis Height (Horizontal)", fontsize=14, weight='bold')
+    plt.subplots_adjust(bottom=0.25)
+    ax.imshow(blended)
+    pitch_line_y = display_rgb.shape[0] // 2
+    line = ax.axhline(pitch_line_y, color='magenta', linestyle='--', label='Pitch Axis')
+    ax.axvline(adjusted_axis_x, color='cyan', linestyle='--', linewidth=1.2)
+    ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--', linewidth=1.2)
+
+    # Add legend
+    legend_elements = [
+        Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
+        Line2D([0], [0], color='orange', linestyle='--', label='Root Chord'),
+        Line2D([0], [0], color='magenta', linestyle='--', label='Pitching Axis (Adjustable)')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+
+    ax_slider_pitch = plt.axes([0.25, 0.1, 0.5, 0.03])
+    slider_pitch = Slider(ax_slider_pitch, 'Pitch Axis Y', 0, display_rgb.shape[0], valinit=pitch_line_y)
+
+    pitch_confirmed = {'value': False}
+
+    def update_pitch(val):
+        line.set_ydata([val, val])
+        fig.canvas.draw_idle()
+
+    slider_pitch.on_changed(update_pitch)
+
+    ax_button = plt.axes([0.4, 0.02, 0.2, 0.05])
+    btn_pitch_confirm = Button(ax_button, 'Confirm')
+
+    def confirm_pitch(event):
+        pitch_confirmed['value'] = True
+        plt.close()
+
+    btn_pitch_confirm.on_clicked(confirm_pitch)
+    plt.show()
+
+    if not pitch_confirmed['value']:
+        return pd.DataFrame()
+
+    pitch_axis_y = slider_pitch.val
+    pitch_axis_m = pitch_axis_y * pixel_to_m
+
+    # --- 4: Click fluke tip ---
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.imshow(blended)
+    ax.axhline(pitch_axis_y, color='magenta', linestyle='--')
+    ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
+    ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--')
+    ax.set_title("Step 4: Click fluke tip")
+
+    # Add legend
+    legend_elements = [
+        Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
+        Line2D([0], [0], color='orange', linestyle='--', label='Root Chord'),
+        Line2D([0], [0], color='magenta', linestyle='--', label='Pitching Axis (Adjustable)')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+
+    tip_point = plt.ginput(1, timeout=0)
+    plt.close()
+
+    if not tip_point:
+        print("❌ No tip selected. Aborting.")
+        return pd.DataFrame()
+
+    (x_tip, y_tip) = tip_point[0]
+    x_tip /= scale_factor
+    y_tip /= scale_factor
+
+    overlay = img.copy()
+
+    # --- Ensure root_chord_x is to the left of x_tip ---
+    if x_tip < root_chord_x:
+        root_chord_x, x_tip = x_tip, root_chord_x  # Swap to maintain left → right direction
+
+    # --- Generate 10 sections from root to tip ---
+    x_edges = np.linspace(root_chord_x, x_tip, 11)  # 10 segments = 11 edges
     chord_lengths = []
     span_positions = []
     leading_edges = []
     trailing_edges = []
     section_centers = []
-    pitch_pts = []
 
-    overlay = img.copy()
-
-    # Loop to draw 10 lines only (stations 1 to 10)
     for i in range(10):
         x_start, x_end = int(x_edges[i]), int(x_edges[i + 1])
         section = refined_mask[:, x_start:x_end]
@@ -382,80 +406,81 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
             chord = (y_max - y_min) * pixel_to_m
             mid_x = int(0.5 * (x_start + x_end))
 
-            # Store values
             leading_edges.append(y_min * pixel_to_m)
             trailing_edges.append(y_max * pixel_to_m)
             chord_lengths.append(chord)
             section_centers.append(mid_x)
-            span_pos = (mid_x - x_edges[0]) * pixel_to_m
-            span_positions.append(span_pos)
+            span_positions.append((mid_x - x_edges[0]) * pixel_to_m)
 
-            # Draw section line and station number
-            cv2.line(overlay, (mid_x, y_min), (mid_x, y_max), (0, 0, 255), 2)
-            cv2.putText(overlay, f"{i + 1}", (mid_x + 5, y_max),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+    # --- Clean up and finalise chord section data ---
 
-    # --- Add station 11 (tip) ---
-    span_positions.append((x_edges[-1] - x_edges[0]) * pixel_to_m)
-    chord_lengths.append(0.0)
-    leading_edges.append(np.nan)
-    trailing_edges.append(np.nan)
-    section_centers.append(int(0.5 * (x_edges[-2] + x_edges[-1])))
-
-    # --- 4. Draw outline & symmetry ---
-    contours, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(overlay, contours, -1, (0, 255, 0), 1)
-    cv2.line(overlay, (symmetry_axis_px, 0), (symmetry_axis_px, h_img), (255, 255, 0), 2)
- 
-    # Add final station (tip) with zero chord
-    if len(span_positions) > 0:
+    # Ensure we only have 11 stations (10 + tip)
+    if len(chord_lengths) < 11:
+        # Add tip if not already added
         span_positions.append((x_edges[-1] - x_edges[0]) * pixel_to_m)
         chord_lengths.append(0.0)
         leading_edges.append(np.nan)
         trailing_edges.append(np.nan)
         section_centers.append(int(0.5 * (x_edges[-2] + x_edges[-1])))
 
-    # --- 5. Ask user to adjust pitching axis height (Y position) ---
-    fig, ax = plt.subplots()
-    plt.subplots_adjust(bottom=0.25)
-    ax.imshow(overlay)
-    pitch_line_y = overlay.shape[0] // 2
-    line = ax.axhline(pitch_line_y, color='magenta', linestyle='--', label='Pitch Axis')
+    # --- Check lengths before creating DataFrame ---
+    lengths = {
+        "chord_lengths": len(chord_lengths),
+        "leading_edges": len(leading_edges),
+        "trailing_edges": len(trailing_edges),
+        "section_centers": len(section_centers),
+        "pitch_axis_m": 11
+    }
+    print("✅ Section data lengths:", lengths)
 
-    ax_slider = plt.axes([0.25, 0.1, 0.5, 0.03])
-    slider = Slider(ax_slider, 'Pitch Axis Y', 0, overlay.shape[0], valinit=pitch_line_y)
-
-    confirmed = {'value': False}
-
-    def update_pitch(val):
-        line.set_ydata([val, val])
-        fig.canvas.draw_idle()
-
-    slider.on_changed(update_pitch)
-
-    ax_button = plt.axes([0.4, 0.02, 0.2, 0.05])
-    button = Button(ax_button, 'Confirm')
-
-    def confirm_pitch(event):
-        confirmed['value'] = True
-        plt.close()
-
-    button.on_clicked(confirm_pitch)
-    plt.title("Step 3: Adjust Pitching Axis (Y)")
-    plt.show()
-
-    if not confirmed['value']:
+    if len(set(lengths.values())) > 1:
+        print("❌ Mismatched lengths detected. Aborting.")
         return pd.DataFrame()
 
-    pitch_axis_y = slider.val
-    pitch_axis_m = pitch_axis_y * pixel_to_m
+    # --- 5. Draw outline & symmetry ---
+    contours, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 255, 0), 1)
+    cv2.line(overlay, (symmetry_axis_px, 0), (symmetry_axis_px, h_img), (255, 255, 0), 2)
 
     # Draw magenta dots on the chosen pitching axis
     for cx in section_centers:
         cv2.circle(overlay, (cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
 
     # --- 7. Compute area and AR ---
-    strip_width = (abs(x2 - x1) / 11) * pixel_to_m
+    strip_width = (abs(x_tip - root_chord_x) / 11) * pixel_to_m
+    area = np.sum([c * strip_width for c in chord_lengths])
+    semi_span = 11 * strip_width
+    AR = (4 * semi_span**2) / (2 * area) if area > 0 else np.nan
+    mean_chord = np.mean(chord_lengths[:-1])  # exclude tip
+
+    summary_metrics = {
+        "half_area_m2": area,
+        "semi_span_m": semi_span,
+        "aspect_ratio": AR,
+        "mean_chord_m": mean_chord
+    }
+
+    df = pd.DataFrame({
+        "station": list(range(1, 12)),
+        "leading_edge": leading_edges,
+        "trailing_edge": trailing_edges,
+        "chord_length": chord_lengths,
+        "pitch_axis_m": [pitch_axis_m] * 11
+    })
+    
+    df.to_csv(output_csv_path, index=False)
+
+    # --- 5. Draw outline & symmetry ---
+    contours, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 255, 0), 1)
+    cv2.line(overlay, (symmetry_axis_px, 0), (symmetry_axis_px, h_img), (255, 255, 0), 2)
+
+    # Draw magenta dots on the chosen pitching axis
+    for cx in section_centers:
+        cv2.circle(overlay, (cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
+
+    # --- 7. Compute area and AR ---
+    strip_width = (abs(x_tip - root_chord_x) / 11) * pixel_to_m
     area = np.sum([c * strip_width for c in chord_lengths])
     semi_span = 11 * strip_width
     AR = (4 * semi_span**2) / (2 * area) if area > 0 else np.nan
@@ -463,47 +488,81 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
 
     df = pd.DataFrame({
         "station": list(range(1, 12)),
-        "leading_edge": leading_edges[:11],
-        "trailing_edge": trailing_edges[:11],
-        "chord_length": chord_lengths[:11],
-        "pitch_axis_m_px": [pitch_axis_m] * 11  # fixed manual Y-coordinate
+        "leading_edge": leading_edges,
+        "trailing_edge": trailing_edges,
+        "chord_length": chord_lengths,
+        "pitch_axis_m": [pitch_axis_m] * 11
     })
-
+    
     df.to_csv(output_csv_path, index=False)
 
-    # --- 9. Save overlay ---
+    # --- Draw final overlay with mirrored section lines ---
+    # Draw outline and symmetry axis again
+    contours, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 255, 0), 1)
+    cv2.line(overlay, (symmetry_axis_px, 0), (symmetry_axis_px, h_img), (255, 255, 0), 2)
+
+    # --- Draw original and mirrored section lines + pitch dots with correct station numbers ---
+    for i in range(10):
+        station_number = 10 - i
+        station_number_mirror = i + 1
+
+        cx = section_centers[i]
+        y1 = int(leading_edges[i] / pixel_to_m)
+        y2 = int(trailing_edges[i] / pixel_to_m)
+
+        # Draw original section
+        cv2.line(overlay, (cx, y1), (cx, y2), (0, 0, 255), 2)
+        cv2.putText(overlay, f"{station_number}", (cx + 5, y2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        cv2.circle(overlay, (cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
+
+        # Draw mirrored section
+        mirrored_cx = int(2 * symmetry_axis_px - cx)
+        cv2.line(overlay, (mirrored_cx, y1), (mirrored_cx, y2), (0, 0, 255), 2)
+        cv2.putText(overlay, f"{11 - station_number_mirror}", (mirrored_cx + 5, y2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        cv2.circle(overlay, (mirrored_cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
+
+    # Draw pitching axis across entire fluke
+    cv2.line(overlay, (0, int(pitch_axis_y)), (overlay.shape[1], int(pitch_axis_y)), (255, 0, 255), 1)
+
+    # --- Save overlay now ---
     cv2.imwrite(output_img_path, overlay)
 
-    # --- Preview and confirm final result ---
-    plt.figure(figsize=(10, 8))
-    plt.imshow(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
-    plt.title("Final section overlay – confirm to save or retry")
+    # --- Preview and retry-confirm loop ---
+    while True:
+        plt.figure(figsize=(12, 8))
+        plt.imshow(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
+        plt.title("Final mirrored fluke overlay – confirm to save or retry")
 
-    confirm_ax = plt.axes([0.35, 0.02, 0.15, 0.05])
-    retry_ax = plt.axes([0.55, 0.02, 0.15, 0.05])
-    final_confirmed = {'value': False}
+        confirm_ax = plt.axes([0.35, 0.02, 0.15, 0.05])
+        retry_ax = plt.axes([0.55, 0.02, 0.15, 0.05])
+        final_confirmed = {'value': False}
 
-    def confirm_overlay(event):
-        final_confirmed['value'] = True
-        plt.close()
+        def confirm_overlay(event):
+            final_confirmed['value'] = True
+            plt.close()
 
-    def retry_overlay(event):
-        final_confirmed['value'] = False
-        plt.close()
+        def retry_overlay(event):
+            final_confirmed['value'] = False
+            plt.close()
 
-    btn_confirm = Button(confirm_ax, 'Confirm')
-    btn_retry = Button(retry_ax, 'Retry')
-    btn_confirm.on_clicked(confirm_overlay)
-    btn_retry.on_clicked(retry_overlay)
-    plt.show()
+        btn_confirm = Button(confirm_ax, 'Confirm')
+        btn_retry = Button(retry_ax, 'Retry')
+        btn_confirm.on_clicked(confirm_overlay)
+        btn_retry.on_clicked(retry_overlay)
 
-    if not final_confirmed['value']:
-        return process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m)
+        plt.show()
 
-    print(f"✅ Saved: {output_csv_path}\n🖼️ Overlay saved: {output_img_path}")
-
-    return df
-
+        if final_confirmed['value']:
+            print(f"✅ Saved: {output_csv_path}\n🖼️ Overlay saved: {output_img_path}")
+            return df, summary_metrics
+        else:
+            df, overlay = select_fluke_tip(
+                img, refined_mask, pitch_axis_y,
+                adjusted_axis_x, root_chord_x, scale_factor, pixel_to_m
+            )
 
 # --- MAIN WRAPPER ---
 def run_fluke_extraction_for_uav21_196e(base_dir):
@@ -524,10 +583,9 @@ def run_fluke_extraction_for_uav21_196e(base_dir):
 
     # Extract measurements
     output_csv = os.path.join(output_folder, "fluke_dimensions.csv")
-    output_img = os.path.join(output_folder, "fluke_overlay.jpg")
-    df = process_fluke_image_kmeans(cropped_img, output_csv, output_img)
+    output_img = os.path.join(output_folder, "fluke_overlay.png") 
+    df, metrics = process_fluke_image_kmeans(cropped_img, output_csv, output_img)
     print("🎉 Done!")
-
 
 # --- Run it ---
 run_fluke_extraction_for_uav21_196e("/Users/georgesato/PhD/Chapter1/Fluke_Measurements")
