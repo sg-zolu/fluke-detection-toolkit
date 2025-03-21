@@ -3,11 +3,8 @@ import cv2
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.interpolate import interp1d
-from matplotlib.patches import Rectangle
 from matplotlib.widgets import Slider, Button
 from matplotlib.lines import Line2D
-from numpy.polynomial.polynomial import Polynomial
 from segment_anything import sam_model_registry, SamPredictor
 
 def rotate_with_slider(image):
@@ -132,90 +129,163 @@ def get_fluke_mask_with_sam(image_bgr, checkpoint_path="/Users/georgesato/PhD/Ch
 
     return masks[0].astype(np.uint8) * 255
 
-def select_fluke_tip(img, refined_mask, pitch_axis_y, adjusted_axis_x, root_chord_x, scale_factor, pixel_to_m):
-    # --- 4: Click fluke tip ---
+def select_fluke_tip(img, refined_mask, pitch_axis_y, adjusted_axis_x, root_chord_x, scale_factor, datum_y):
+    overlay = cv2.addWeighted(img, 0.7, cv2.cvtColor(refined_mask, cv2.COLOR_BGR2RGB), 0.3, 0)
     fig, ax = plt.subplots(figsize=(10, 8))
-    ax.imshow(img)
+    ax.imshow(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
     ax.axhline(pitch_axis_y, color='magenta', linestyle='--')
+    ax.axhline(datum_y, color='lime', linestyle='--')
     ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
     ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--')
     ax.set_title("Step 4: Click fluke tip")
+
+    # Add legend
+    legend_elements = [
+        Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
+        Line2D([0], [0], color='orange', linestyle='--', label='Root Chord'),
+        Line2D([0], [0], color='magenta', linestyle='--', label='Pitching Axis (Adjustable)'),
+        Line2D([0], [0], color='lime', linestyle='--', label='Datum')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
 
     tip_point = plt.ginput(1, timeout=0)
     plt.close()
 
     if not tip_point:
         print("❌ No tip selected. Aborting.")
-        return pd.DataFrame()
+        return pd.DataFrame(), None, None
 
     (x_tip, y_tip) = tip_point[0]
     x_tip /= scale_factor
     y_tip /= scale_factor
 
-    overlay = img.copy()
-
-    # --- Ensure root_chord_x is to the left of x_tip ---
     if x_tip < root_chord_x:
-        root_chord_x, x_tip = x_tip, root_chord_x  # Swap to maintain left → right direction
+        root_chord_x, x_tip = x_tip, root_chord_x
 
-    # --- Generate 10 sections from root to tip ---
-    x_edges = np.linspace(root_chord_x, x_tip, 11)  # 10 segments = 11 edges
+    x_edges = np.linspace(x_tip, root_chord_x, 11)
     chord_lengths = []
     span_positions = []
     leading_edges = []
     trailing_edges = []
-    section_centers = []
+    section_end = []
+    section_start = []
+    le_datum_dists = []
+    te_datum_dists = []
+
+    # Create x_start and x_end arrays
+    x_start = np.array(x_edges[1:])
+    x_end = np.array(x_edges[:-1])   
 
     for i in range(10):
-        x_start, x_end = int(x_edges[i]), int(x_edges[i + 1])
-        section = refined_mask[:, x_start:x_end]
+        section = refined_mask[:, int(x_start[i]):int(x_end[i])]
         y_coords = np.where(section > 0)[0]
+        print(y_coords)
 
         if len(y_coords) > 0:
             y_min = int(np.min(y_coords))
             y_max = int(np.max(y_coords))
-            chord = (y_max - y_min) * pixel_to_m
-            mid_x = int(0.5 * (x_start + x_end))
 
-            leading_edges.append(y_min * pixel_to_m)
-            trailing_edges.append(y_max * pixel_to_m)
+            # Safely clamp y_min and y_max inside the actual image bounds
+            y_min = np.clip(y_min, 0, overlay.shape[0]-1)
+            y_max = np.clip(y_max, 0, overlay.shape[0]-1)
+
+            le_from_datum = datum_y - y_min
+            te_from_datum = datum_y - y_max
+            chord = le_from_datum - te_from_datum  # same as y_max - y_min
+
+            # Append distances for CSV
+            le_datum_dists.append(round(le_from_datum,2))
+            te_datum_dists.append(round(te_from_datum,2))
+
+            # For plotting
+            leading_edges.append(y_min)
+            trailing_edges.append(y_max)
             chord_lengths.append(chord)
-            section_centers.append(mid_x)
-            span_positions.append((mid_x - x_edges[0]) * pixel_to_m)
+            section_start.append(x_start[i])
+            section_end.append(x_end[i])
+            span_positions.append(x_start[i] - x_edges[0])
 
-    # --- Clean up and finalize chord section data ---
-    if len(chord_lengths) < 11:
-        span_positions.append((x_edges[-1] - x_edges[0]) * pixel_to_m)
-        chord_lengths.append(0.0)
-        leading_edges.append(np.nan)
-        trailing_edges.append(np.nan)
-        section_centers.append(int(0.5 * (x_edges[-2] + x_edges[-1])))
+    # Add tip if not already added    
+    leading_edges.append(round(datum_y - y_tip,3))
+    trailing_edges.append(round(datum_y - y_tip,3))
+    le_datum_dists.append(round(datum_y - y_tip,3))
+    te_datum_dists.append(round(datum_y - y_tip,3))
+    chord_lengths.append(0.0)
+    section_start.append(round(x_tip,3))
+    section_end.append(round(x_tip,3))
 
-    # --- Check lengths before creating DataFrame ---
+    print(x_edges)
+    print(x_start, x_end)
+    print(span_positions)
+    print(leading_edges)
+    print(trailing_edges)
+    print(chord_lengths)
+
+    # b/chord ratios from Table 2 for stations 1–10
+    b_over_c = [0.5, 0.456, 0.417, 0.383, 0.333, 0.265, 0.155, 0.0, -0.296, -0.875]
+    pitch_axis_b_px = [round(b_over_c[i] * chord_lengths[i],3) if i < len(b_over_c) and chord_lengths[i] > 0 else np.nan for i in range(10)]
+    pitch_axis_b_px.append(np.nan)
+
+    print(pitch_axis_b_px)
+
     lengths = {
-        "chord_lengths": len(chord_lengths),
-        "leading_edges": len(leading_edges),
-        "trailing_edges": len(trailing_edges),
-        "section_centers": len(section_centers),
-        "pitch_axis_m": 11
+        "chord_lengths": len(np.array(chord_lengths)),
+        "leading_edges": len(np.array(leading_edges)),
+        "trailing_edges": len(np.array(trailing_edges)),
+        "le_from_datum": len(np.array(le_datum_dists)),
+        "te_from_datum": len(np.array(te_datum_dists)),
+        "section_start": len(np.array(section_start)),
+        "section_start_px": len(np.array(section_start)),
+        "pitch_axis_b_px": len(np.array(pitch_axis_b_px))
     }
     print("✅ Section data lengths:", lengths)
 
     if len(set(lengths.values())) > 1:
         print("❌ Mismatched lengths detected. Aborting.")
-        return pd.DataFrame()
+        return pd.DataFrame(), None, None
+
+    contours, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 255, 0), 1)
+    h_img = img.shape[0]
+    symmetry_axis_px = int(adjusted_axis_x)
+    cv2.line(overlay, (symmetry_axis_px, 0), (symmetry_axis_px, h_img), (255, 255, 0), 2)
+    cv2.line(overlay, (0, int(datum_y)), (overlay.shape[1], int(datum_y)), (0, 255, 0), 1)
+    cv2.line(overlay, (int(root_chord_x), 0), (int(root_chord_x), h_img), (0, 165, 255), 1)
+
+    for i in range(10):
+        cx = int(section_end[i])
+        b = pitch_axis_b_px[i]
+        if not np.isnan(b):
+            cy = int(leading_edges[i] + b)
+            cv2.circle(overlay, (cx, cy), 3, (255, 0, 255), -1)
+
+    strip_width_px = abs(x_tip - root_chord_x) / 11
+    area_px2 = np.sum([c * strip_width_px for c in chord_lengths]) if chord_lengths else 0
+    semi_span_px = 11 * strip_width_px
+    AR_px = (4 * semi_span_px**2) / (2 * area_px2) if area_px2 > 0 else np.nan
+
+    summary_metrics = {
+        "strip_width_px": strip_width_px,
+        "half_area_px2": area_px2,
+        "semi_span_px": semi_span_px,
+        "aspect_ratio": AR_px
+    }
 
     df = pd.DataFrame({
         "station": list(range(1, 12)),
-        "leading_edge": leading_edges,
-        "trailing_edge": trailing_edges,
-        "chord_length": chord_lengths,
-        "pitch_axis_m": [pitch_axis_y] * 11
+        "leading_edge_px": leading_edges,
+        "trailing_edge_px": trailing_edges,
+        "le_from_datum_px": le_datum_dists,
+        "te_from_datum_px": te_datum_dists,
+        "chord_length_px": chord_lengths,
+        "section_start_px": section_start,
+        "section_end_px": section_end,
+        "pitch_axis_b_px": pitch_axis_b_px
     })
-    
-    return df, overlay
 
-def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m=0.005):
+    return df, overlay, summary_metrics
+
+def process_fluke_image(img, output_csv_path, output_img_path):
     global adjusted_axis_x
 
     h_img, w_img = img.shape[:2]
@@ -268,13 +338,14 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
     adjusted_axis_x = slider.val
     symmetry_axis_px = int(adjusted_axis_x / scale_factor)
 
-    # --- 2.5: Ask user to adjust root chord position (vertical base line) ---
+    # --- 2: Ask user to adjust root chord position (vertical base line) ---
     fig, ax = plt.subplots()
     fig.suptitle("Step 2: Adjust Root Chord (Vertical Base Line)", fontsize=14, weight='bold')
     plt.subplots_adjust(bottom=0.25)
     ax.imshow(blended)
     default_root_x = display_rgb.shape[1] * 0.25
     root_line = ax.axvline(default_root_x, color='orange', linestyle='--', label='Root Chord')
+    ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
     
     # Add legend
     legend_elements = [
@@ -352,14 +423,64 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
         return pd.DataFrame()
 
     pitch_axis_y = slider_pitch.val
-    pitch_axis_m = pitch_axis_y * pixel_to_m
 
-    # --- 3.5: Add horizontal cutoff to mask (removing peduncle above line) ---
+    # --- 4: Add DATUM adjustment line (used for LE/TE distances) ---
     fig, ax = plt.subplots()
-    fig.suptitle("Step 3.5: Adjust Cutoff Line (Removes Peduncle)", fontsize=14, weight='bold')
+    fig.suptitle("Step 4: Adjust Horizontal Datum Line", fontsize=14, weight='bold')
+    plt.subplots_adjust(bottom=0.25)
+    ax.imshow(blended)
+    datum_y_default = display_rgb.shape[0] // 2
+    datum_line = ax.axhline(datum_y_default, color='yellow', linestyle='--', linewidth=1.5, label='Datum')
+    ax.axhline(pitch_axis_y, color='magenta', linestyle='--')
+    ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
+    ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--')
+    ax.legend(loc='upper right')
+
+    # Add legend
+    legend_elements = [
+        Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
+        Line2D([0], [0], color='orange', linestyle='--', label='Root Chord'),
+        Line2D([0], [0], color='magenta', linestyle='--', label='Pitching Axis (Adjustable)'),
+        Line2D([0], [0], color='yellow', linestyle='--', label='Datum') 
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+
+    ax_slider_datum = plt.axes([0.25, 0.1, 0.5, 0.03])
+    slider_datum = Slider(ax_slider_datum, 'Datum Y', 0, display_rgb.shape[0], valinit=datum_y_default)
+
+    datum_confirmed = {'value': False}
+
+    def update_datum(val):
+        datum_line.set_ydata([val, val])
+        fig.canvas.draw_idle()
+
+    slider_datum.on_changed(update_datum)
+
+    ax_button = plt.axes([0.4, 0.02, 0.2, 0.05])
+    btn_confirm_datum = Button(ax_button, 'Confirm')
+
+    def confirm_datum(event):
+        datum_confirmed['value'] = True
+        plt.close()
+
+    btn_confirm_datum.on_clicked(confirm_datum)
+    plt.show()
+
+    if not datum_confirmed['value']:
+        return pd.DataFrame()
+
+    datum_y = slider_datum.val
+
+    # --- 5: Add horizontal cutoff to mask (removing peduncle above line) ---
+    fig, ax = plt.subplots()
+    fig.suptitle("Step 5: Adjust Cutoff Line (Removes Peduncle)", fontsize=14, weight='bold')
     plt.subplots_adjust(bottom=0.25)
     ax.imshow(blended)
     cutoff_line = ax.axhline(display_rgb.shape[0] * 0.2, color='red', linestyle='--')
+    ax.axhline(pitch_axis_y, color='magenta', linestyle='--')
+    ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
+    ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--')
+    ax.axhline(datum_y, color='yellow', linestyle='--')
 
     ax_slider_cut = plt.axes([0.25, 0.1, 0.5, 0.03])
     slider_cut = Slider(ax_slider_cut, 'Cutoff Y', 0, display_rgb.shape[0], valinit=display_rgb.shape[0] * 0.2)
@@ -393,147 +514,8 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
     overlay_mask[:, :, 1] = refined_mask_display
     blended = cv2.addWeighted(display_rgb, 0.7, overlay_mask, 0.3, 0)
 
-    # --- 4: Click fluke tip ---
-    fig, ax = plt.subplots(figsize=(10, 8))
-    ax.imshow(blended)
-    ax.axhline(pitch_axis_y, color='magenta', linestyle='--')
-    ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
-    ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--')
-    ax.set_title("Step 4: Click fluke tip")
-
-    # Add legend
-    legend_elements = [
-        Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
-        Line2D([0], [0], color='orange', linestyle='--', label='Root Chord'),
-        Line2D([0], [0], color='magenta', linestyle='--', label='Pitching Axis (Adjustable)')
-    ]
-    ax.legend(handles=legend_elements, loc='upper right')
-
-    tip_point = plt.ginput(1, timeout=0)
-    plt.close()
-
-    if not tip_point:
-        print("❌ No tip selected. Aborting.")
-        return pd.DataFrame()
-
-    (x_tip, y_tip) = tip_point[0]
-    x_tip /= scale_factor
-    y_tip /= scale_factor
-
-    overlay = img.copy()
-
-    # --- Ensure root_chord_x is to the left of x_tip ---
-    if x_tip < root_chord_x:
-        root_chord_x, x_tip = x_tip, root_chord_x  # Swap to maintain left → right direction
-
-    # --- Generate 10 sections from root to tip ---
-    x_edges = np.linspace(root_chord_x, x_tip, 11)  # 10 segments = 11 edges
-    chord_lengths = []
-    span_positions = []
-    leading_edges = []
-    trailing_edges = []
-    section_centers = []
-
-    for i in range(10):
-        x_start, x_end = int(x_edges[i]), int(x_edges[i + 1])
-        section = refined_mask[:, x_start:x_end]
-        y_coords = np.where(section > 0)[0]
-
-        if len(y_coords) > 0:
-            y_min = int(np.min(y_coords))
-            y_max = int(np.max(y_coords))
-            chord = (y_max - y_min) * pixel_to_m
-            mid_x = int(0.5 * (x_start + x_end))
-
-            leading_edges.append(y_min * pixel_to_m)
-            trailing_edges.append(y_max * pixel_to_m)
-            chord_lengths.append(chord)
-            section_centers.append(mid_x)
-            span_positions.append((mid_x - x_edges[0]) * pixel_to_m)
-
-    # --- Clean up and finalise chord section data ---
-
-    # Ensure we only have 11 stations (10 + tip)
-    if len(chord_lengths) < 11:
-        # Add tip if not already added
-        span_positions.append((x_edges[-1] - x_edges[0]) * pixel_to_m)
-        chord_lengths.append(0.0)
-        leading_edges.append(np.nan)
-        trailing_edges.append(np.nan)
-        section_centers.append(int(0.5 * (x_edges[-2] + x_edges[-1])))
-
-    # --- Check lengths before creating DataFrame ---
-    lengths = {
-        "chord_lengths": len(chord_lengths),
-        "leading_edges": len(leading_edges),
-        "trailing_edges": len(trailing_edges),
-        "section_centers": len(section_centers),
-        "pitch_axis_m": 11
-    }
-    print("✅ Section data lengths:", lengths)
-
-    if len(set(lengths.values())) > 1:
-        print("❌ Mismatched lengths detected. Aborting.")
-        return pd.DataFrame()
-
-    # --- 5. Draw outline & symmetry ---
-    contours, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(overlay, contours, -1, (0, 255, 0), 1)
-    cv2.line(overlay, (symmetry_axis_px, 0), (symmetry_axis_px, h_img), (255, 255, 0), 2)
-
-    # Draw magenta dots on the chosen pitching axis
-    for cx in section_centers:
-        cv2.circle(overlay, (cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
-
-    # --- 7. Compute area and AR ---
-    strip_width = (abs(x_tip - root_chord_x) / 11) * pixel_to_m
-    area = np.sum([c * strip_width for c in chord_lengths])
-    semi_span = 11 * strip_width
-    AR = (4 * semi_span**2) / (2 * area) if area > 0 else np.nan
-    mean_chord = np.mean(chord_lengths[:-1])  # exclude tip
-
-    summary_metrics = {
-        "half_area_m2": area,
-        "semi_span_m": semi_span,
-        "aspect_ratio": AR,
-        "mean_chord_m": mean_chord
-    }
-
-    df = pd.DataFrame({
-        "station": list(range(1, 12)),
-        "leading_edge": leading_edges,
-        "trailing_edge": trailing_edges,
-        "chord_length": chord_lengths,
-        "pitch_axis_m": [pitch_axis_m] * 11
-    })
-    
-    df.to_csv(output_csv_path, index=False)
-
-    # --- 5. Draw outline & symmetry ---
-    contours, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(overlay, contours, -1, (0, 255, 0), 1)
-    cv2.line(overlay, (symmetry_axis_px, 0), (symmetry_axis_px, h_img), (255, 255, 0), 2)
-
-    # Draw magenta dots on the chosen pitching axis
-    for cx in section_centers:
-        cv2.circle(overlay, (cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
-
-    # --- 7. Compute area and AR ---
-    strip_width = (abs(x_tip - root_chord_x) / 11) * pixel_to_m
-    area = np.sum([c * strip_width for c in chord_lengths])
-    semi_span = 11 * strip_width
-    AR = (4 * semi_span**2) / (2 * area) if area > 0 else np.nan
-    mean_chord = np.mean(chord_lengths[:-1])  # exclude tip
-
-    df = pd.DataFrame({
-        "station": list(range(1, 12)),
-        "leading_edge": leading_edges,
-        "trailing_edge": trailing_edges,
-        "chord_length": chord_lengths,
-        "pitch_axis_m": [pitch_axis_m] * 11
-    })
-    
-    df.to_csv(output_csv_path, index=False)
+    # --- 6: Click fluke tip ---
+    df, overlay, summary_metrics = select_fluke_tip(img, refined_mask, pitch_axis_y, adjusted_axis_x, root_chord_x, scale_factor, datum_y)
 
     # --- Draw final overlay with mirrored section lines ---
     # Draw outline and symmetry axis again
@@ -543,23 +525,23 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
 
     # --- Draw original and mirrored section lines + pitch dots with correct station numbers ---
     for i in range(10):
-        station_number = 10 - i
-        station_number_mirror = i + 1
+        station_number = i + 1
+        station_number_mirror = 10 - i
 
-        cx = section_centers[i]
-        y1 = int(leading_edges[i] / pixel_to_m)
-        y2 = int(trailing_edges[i] / pixel_to_m)
+        cx = int(df.section_end_px[i])
+        y1 = int(df.leading_edge_px[i])
+        y2 = int(df.trailing_edge_px[i])
 
         # Draw original section
         cv2.line(overlay, (cx, y1), (cx, y2), (0, 0, 255), 2)
-        cv2.putText(overlay, f"{station_number}", (cx + 5, y2),
+        cv2.putText(overlay, f"{station_number}", (cx, y2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
         cv2.circle(overlay, (cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
 
         # Draw mirrored section
         mirrored_cx = int(2 * symmetry_axis_px - cx)
         cv2.line(overlay, (mirrored_cx, y1), (mirrored_cx, y2), (0, 0, 255), 2)
-        cv2.putText(overlay, f"{11 - station_number_mirror}", (mirrored_cx + 5, y2),
+        cv2.putText(overlay, f"{11 - station_number_mirror}", (mirrored_cx - 5, y2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
         cv2.circle(overlay, (mirrored_cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
 
@@ -595,12 +577,13 @@ def process_fluke_image_kmeans(img, output_csv_path, output_img_path, pixel_to_m
         plt.show()
 
         if final_confirmed['value']:
+            df.to_csv(output_csv_path, index=False) 
             print(f"✅ Saved: {output_csv_path}\n🖼️ Overlay saved: {output_img_path}")
             return df, summary_metrics
         else:
             df, overlay = select_fluke_tip(
                 img, refined_mask, pitch_axis_y,
-                adjusted_axis_x, root_chord_x, scale_factor, pixel_to_m
+                adjusted_axis_x, root_chord_x, scale_factor, datum_y
             )
 
 # --- MAIN WRAPPER ---
@@ -623,7 +606,7 @@ def run_fluke_extraction_for_uav21_196e(base_dir):
     # Extract measurements
     output_csv = os.path.join(output_folder, "fluke_dimensions.csv")
     output_img = os.path.join(output_folder, "fluke_overlay.png") 
-    df, metrics = process_fluke_image_kmeans(cropped_img, output_csv, output_img)
+    df, metrics = process_fluke_image(cropped_img, output_csv, output_img)
     print("🎉 Done!")
 
 # --- Run it ---
