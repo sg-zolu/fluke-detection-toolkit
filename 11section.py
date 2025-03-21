@@ -177,7 +177,7 @@ def select_fluke_tip(img, refined_mask, pitch_axis_y, adjusted_axis_x, root_chor
     x_end = np.array(x_edges[:-1])   
 
     for i in range(10):
-        section = refined_mask[:, int(x_start[i]):int(x_end[i])]
+        section = refined_mask[:, int(x_end[i])]
         y_coords = np.where(section > 0)[0]
         print(y_coords)
 
