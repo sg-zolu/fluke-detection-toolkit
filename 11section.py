@@ -129,11 +129,10 @@ def get_fluke_mask_with_sam(image_bgr, checkpoint_path="/Users/georgesato/PhD/Ch
 
     return masks[0].astype(np.uint8) * 255
 
-def select_fluke_tip(img, refined_mask, pitch_axis_y, adjusted_axis_x, root_chord_x, scale_factor, datum_y):
+def select_fluke_tip(img, refined_mask, adjusted_axis_x, root_chord_x, scale_factor, datum_y):
     overlay = cv2.addWeighted(img, 0.7, cv2.cvtColor(refined_mask, cv2.COLOR_BGR2RGB), 0.3, 0)
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.imshow(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
-    ax.axhline(pitch_axis_y, color='magenta', linestyle='--')
     ax.axhline(datum_y, color='lime', linestyle='--')
     ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
     ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--')
@@ -143,7 +142,6 @@ def select_fluke_tip(img, refined_mask, pitch_axis_y, adjusted_axis_x, root_chor
     legend_elements = [
         Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
         Line2D([0], [0], color='orange', linestyle='--', label='Root Chord'),
-        Line2D([0], [0], color='magenta', linestyle='--', label='Pitching Axis (Adjustable)'),
         Line2D([0], [0], color='lime', linestyle='--', label='Datum')
     ]
     ax.legend(handles=legend_elements, loc='upper right')
@@ -380,58 +378,13 @@ def process_fluke_image(img, output_csv_path, output_img_path):
 
     root_chord_x = slider_root.val / scale_factor
 
-    # --- 3: Adjust pitching axis BEFORE tip click ---
-    fig, ax = plt.subplots()
-    fig.suptitle("Step 3: Adjust Pitching Axis Height (Horizontal)", fontsize=14, weight='bold')
-    plt.subplots_adjust(bottom=0.25)
-    ax.imshow(blended)
-    pitch_line_y = display_rgb.shape[0] // 2
-    line = ax.axhline(pitch_line_y, color='magenta', linestyle='--', label='Pitch Axis')
-    ax.axvline(adjusted_axis_x, color='cyan', linestyle='--', linewidth=1.2)
-    ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--', linewidth=1.2)
-
-    # Add legend
-    legend_elements = [
-        Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
-        Line2D([0], [0], color='orange', linestyle='--', label='Root Chord'),
-        Line2D([0], [0], color='magenta', linestyle='--', label='Pitching Axis (Adjustable)')
-    ]
-    ax.legend(handles=legend_elements, loc='upper right')
-
-    ax_slider_pitch = plt.axes([0.25, 0.1, 0.5, 0.03])
-    slider_pitch = Slider(ax_slider_pitch, 'Pitch Axis Y', 0, display_rgb.shape[0], valinit=pitch_line_y)
-
-    pitch_confirmed = {'value': False}
-
-    def update_pitch(val):
-        line.set_ydata([val, val])
-        fig.canvas.draw_idle()
-
-    slider_pitch.on_changed(update_pitch)
-
-    ax_button = plt.axes([0.4, 0.02, 0.2, 0.05])
-    btn_pitch_confirm = Button(ax_button, 'Confirm')
-
-    def confirm_pitch(event):
-        pitch_confirmed['value'] = True
-        plt.close()
-
-    btn_pitch_confirm.on_clicked(confirm_pitch)
-    plt.show()
-
-    if not pitch_confirmed['value']:
-        return pd.DataFrame()
-
-    pitch_axis_y = slider_pitch.val
-
-    # --- 4: Add DATUM adjustment line (used for LE/TE distances) ---
+    # --- 3: Add DATUM adjustment line (used for LE/TE distances) ---
     fig, ax = plt.subplots()
     fig.suptitle("Step 4: Adjust Horizontal Datum Line", fontsize=14, weight='bold')
     plt.subplots_adjust(bottom=0.25)
     ax.imshow(blended)
     datum_y_default = display_rgb.shape[0] // 2
     datum_line = ax.axhline(datum_y_default, color='yellow', linestyle='--', linewidth=1.5, label='Datum')
-    ax.axhline(pitch_axis_y, color='magenta', linestyle='--')
     ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
     ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--')
     ax.legend(loc='upper right')
@@ -440,7 +393,6 @@ def process_fluke_image(img, output_csv_path, output_img_path):
     legend_elements = [
         Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
         Line2D([0], [0], color='orange', linestyle='--', label='Root Chord'),
-        Line2D([0], [0], color='magenta', linestyle='--', label='Pitching Axis (Adjustable)'),
         Line2D([0], [0], color='yellow', linestyle='--', label='Datum') 
     ]
     ax.legend(handles=legend_elements, loc='upper right')
@@ -471,13 +423,12 @@ def process_fluke_image(img, output_csv_path, output_img_path):
 
     datum_y = slider_datum.val
 
-    # --- 5: Add horizontal cutoff to mask (removing peduncle above line) ---
+    # --- 4: Add horizontal cutoff to mask (removing peduncle above line) ---
     fig, ax = plt.subplots()
     fig.suptitle("Step 5: Adjust Cutoff Line (Removes Peduncle)", fontsize=14, weight='bold')
     plt.subplots_adjust(bottom=0.25)
     ax.imshow(blended)
     cutoff_line = ax.axhline(display_rgb.shape[0] * 0.2, color='red', linestyle='--')
-    ax.axhline(pitch_axis_y, color='magenta', linestyle='--')
     ax.axvline(adjusted_axis_x, color='cyan', linestyle='--')
     ax.axvline(root_chord_x * scale_factor, color='orange', linestyle='--')
     ax.axhline(datum_y, color='yellow', linestyle='--')
@@ -514,8 +465,8 @@ def process_fluke_image(img, output_csv_path, output_img_path):
     overlay_mask[:, :, 1] = refined_mask_display
     blended = cv2.addWeighted(display_rgb, 0.7, overlay_mask, 0.3, 0)
 
-    # --- 6: Click fluke tip ---
-    df, overlay, summary_metrics = select_fluke_tip(img, refined_mask, pitch_axis_y, adjusted_axis_x, root_chord_x, scale_factor, datum_y)
+    # --- 5: Click fluke tip ---
+    df, overlay, summary_metrics = select_fluke_tip(img, refined_mask, adjusted_axis_x, root_chord_x, scale_factor, datum_y)
 
     # --- Draw final overlay with mirrored section lines ---
     # Draw outline and symmetry axis again
@@ -536,17 +487,12 @@ def process_fluke_image(img, output_csv_path, output_img_path):
         cv2.line(overlay, (cx, y1), (cx, y2), (0, 0, 255), 2)
         cv2.putText(overlay, f"{station_number}", (cx, y2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        cv2.circle(overlay, (cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
 
         # Draw mirrored section
         mirrored_cx = int(2 * symmetry_axis_px - cx)
         cv2.line(overlay, (mirrored_cx, y1), (mirrored_cx, y2), (0, 0, 255), 2)
         cv2.putText(overlay, f"{11 - station_number_mirror}", (mirrored_cx - 5, y2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        cv2.circle(overlay, (mirrored_cx, int(pitch_axis_y)), 3, (255, 0, 255), -1)
-
-    # Draw pitching axis across entire fluke
-    cv2.line(overlay, (0, int(pitch_axis_y)), (overlay.shape[1], int(pitch_axis_y)), (255, 0, 255), 1)
 
     # --- Save overlay now ---
     cv2.imwrite(output_img_path, overlay)
@@ -569,6 +515,15 @@ def process_fluke_image(img, output_csv_path, output_img_path):
             final_confirmed['value'] = False
             plt.close()
 
+        # Add legend
+        legend_elements = [
+            Line2D([0], [0], color='cyan', linestyle='--', label='Symmetry Axis'),
+            Line2D([0], [0], color='orange', linestyle='--', label='Root Chord'),
+            Line2D([0], [0], color='yellow', linestyle='--', label='Datum'),
+            Line2D([0], [0], marker='o', color='magenta', linestyle='None', label='Pitch Axis (b/chord)')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right')
+
         btn_confirm = Button(confirm_ax, 'Confirm')
         btn_retry = Button(retry_ax, 'Retry')
         btn_confirm.on_clicked(confirm_overlay)
@@ -582,7 +537,7 @@ def process_fluke_image(img, output_csv_path, output_img_path):
             return df, summary_metrics
         else:
             df, overlay = select_fluke_tip(
-                img, refined_mask, pitch_axis_y,
+                img, refined_mask,
                 adjusted_axis_x, root_chord_x, scale_factor, datum_y
             )
 
