@@ -212,19 +212,10 @@ def select_fluke_tip(img, refined_mask, adjusted_axis_x, root_chord_x, scale_fac
     section_start.append(round(x_tip,3))
     section_end.append(round(x_tip,3))
 
-    print(x_edges)
-    print(x_start, x_end)
-    print(span_positions)
-    print(leading_edges)
-    print(trailing_edges)
-    print(chord_lengths)
-
     # b/chord ratios from Table 2 for stations 1–10
     b_over_c = [0.5, 0.456, 0.417, 0.383, 0.333, 0.265, 0.155, 0.0, -0.296, -0.875]
     pitch_axis_b_px = [round(b_over_c[i] * chord_lengths[i],3) if i < len(b_over_c) and chord_lengths[i] > 0 else np.nan for i in range(10)]
     pitch_axis_b_px.append(np.nan)
-
-    print(pitch_axis_b_px)
 
     lengths = {
         "chord_lengths": len(np.array(chord_lengths)),
@@ -541,28 +532,47 @@ def process_fluke_image(img, output_csv_path, output_img_path):
                 adjusted_axis_x, root_chord_x, scale_factor, datum_y
             )
 
-# --- MAIN WRAPPER ---
-def run_fluke_extraction_for_uav21_196e(base_dir):
-    deployment = "UAV22_201d"
+def run_fluke_extraction_for_deployment(base_dir, deployment):
     dep_path = os.path.join(base_dir, deployment)
     best_image_path = get_best_image_path(dep_path)
     print(f"📸 Best image selected: {best_image_path}")
 
-    # Crop + rotate
     cropped_img = crop_and_rotate_fluke(best_image_path)
     output_folder = os.path.join(dep_path, "Bose_Lien_Fluke_Dimensions")
     os.makedirs(output_folder, exist_ok=True)
 
-    # Save cropped image
     cropped_img_path = os.path.join(output_folder, "cropped_fluke.jpg")
     cv2.imwrite(cropped_img_path, cropped_img)
     print(f"✅ Saved cropped fluke to: {cropped_img_path}")
 
-    # Extract measurements
     output_csv = os.path.join(output_folder, "fluke_dimensions.csv")
     output_img = os.path.join(output_folder, "fluke_overlay.png") 
     df, metrics = process_fluke_image(cropped_img, output_csv, output_img)
     print("🎉 Done!")
 
-# --- Run it ---
-run_fluke_extraction_for_uav21_196e("/Users/georgesato/PhD/Chapter1/Fluke_Measurements")
+
+# # --- MAIN WRAPPER ---
+# def run_fluke_extraction_for_uav21_196e(base_dir):
+#     deployment = "UAV22_201d"
+#     dep_path = os.path.join(base_dir, deployment)
+#     best_image_path = get_best_image_path(dep_path)
+#     print(f"📸 Best image selected: {best_image_path}")
+
+#     # Crop + rotate
+#     cropped_img = crop_and_rotate_fluke(best_image_path)
+#     output_folder = os.path.join(dep_path, "Bose_Lien_Fluke_Dimensions")
+#     os.makedirs(output_folder, exist_ok=True)
+
+#     # Save cropped image
+#     cropped_img_path = os.path.join(output_folder, "cropped_fluke.jpg")
+#     cv2.imwrite(cropped_img_path, cropped_img)
+#     print(f"✅ Saved cropped fluke to: {cropped_img_path}")
+
+#     # Extract measurements
+#     output_csv = os.path.join(output_folder, "fluke_dimensions.csv")
+#     output_img = os.path.join(output_folder, "fluke_overlay.png") 
+#     df, metrics = process_fluke_image(cropped_img, output_csv, output_img)
+#     print("🎉 Done!")
+
+# # --- Run it ---
+# run_fluke_extraction_for_uav21_196e("/Users/georgesato/PhD/Chapter1/Fluke_Measurements")
