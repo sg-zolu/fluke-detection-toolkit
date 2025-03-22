@@ -1,1 +1,30 @@
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment files
+.env
+.venv
+env/
+venv/
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# MacOS files
 .DS_Store
+
+# IDE specific files
+.vscode/
+.idea/
+
+# Generated output folders and files
+**/Bose_Lien_Fluke_Dimensions/
+**/cropped_fluke.jpg
+**/fluke_overlay.png
+**/fluke_dimensions.csv
+
+# Segment Anything checkpoints (if large, or stored elsewhere)
+segment-anything/*.pth
